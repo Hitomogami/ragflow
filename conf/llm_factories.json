@@ -411,6 +411,13 @@
             "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "llm": [
                 {
+                    "llm_name": "qwen3.5-397b-a17b",
+                    "tags": "LLM,CHAT,AGENT,IMAGE2TEXT,256k",
+                    "max_tokens": 1000000,
+                    "model_type": "chat",
+                    "is_tools": true
+                },
+                {
                     "llm_name": "qwen3.5-122b-a10b",
                     "tags": "LLM,CHAT,128k",
                     "max_tokens": 128000,

@@ -70,7 +70,7 @@ SECRET_KEY = None
 FACTORY_LLM_INFOS = None
 ALLOWED_LLM_FACTORIES = None
 
-DATABASE_TYPE = os.getenv("DB_TYPE", "mysql")
+DATABASE_TYPE = os.getenv("DB_TYPE", "postgres")
 DATABASE = decrypt_database_config(name=DATABASE_TYPE)
 
 # authentication
@@ -213,7 +213,7 @@ class StorageFactory:
 
 def init_settings():
     global DATABASE_TYPE, DATABASE
-    DATABASE_TYPE = os.getenv("DB_TYPE", "mysql")
+    DATABASE_TYPE = os.getenv("DB_TYPE", "postgres")
     DATABASE = decrypt_database_config(name=DATABASE_TYPE)
     
     global ALLOWED_LLM_FACTORIES, LLM_FACTORY, LLM_BASE_URL

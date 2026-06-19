@@ -229,7 +229,10 @@ def chunk(filename, binary=None, from_page=0, to_page=MAXIMUM_PAGE_NUMBER,
         tokenize(d, txt, eng)
         res.append(d)
 
-    sorted_sections = paper["sections"]
+    sorted_sections = paper["sections"] or []
+    if not sorted_sections:
+        logging.warning(f"paper['sections'] is empty or None for {filename}, returning minimal result")
+        return res
     # set pivot using the most frequent type of title,
     # then merge between 2 pivot
     bull = bullets_category([txt for txt, _ in sorted_sections])
