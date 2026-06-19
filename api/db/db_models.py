@@ -499,6 +499,14 @@ class BaseDataBase:
         database_config = settings.DATABASE.copy()
         db_name = database_config.pop("name")
 
+        # Optional PostgreSQL schema where RAGFlow tables live (default: public).
+        # When set, all ORM tables are qualified with this schema and the
+        # connection search_path is pinned to it, so deployments that keep data
+        # in a named schema (e.g. one matching the DB user) work consistently.
+        self.schema = database_config.pop("schema", None)
+        if self.schema and settings.DATABASE_TYPE.lower() == "postgres":
+            database_config["options"] = f"-c search_path={self.schema},public"
+
         pool_config = {
             'max_retries': 5,
             'retry_delay': 1,
@@ -654,6 +662,7 @@ class DatabaseLock(Enum):
 
 DB = BaseDataBase().database_connection
 DB.lock = DatabaseLock[settings.DATABASE_TYPE.upper()].value
+DB_SCHEMA = BaseDataBase().schema  # BaseDataBase is a singleton
 
 
 def close_connection():
@@ -667,11 +676,16 @@ def close_connection():
 class DataBaseModel(BaseModel):
     class Meta:
         database = DB
+        schema = DB_SCHEMA
 
 
 @DB.connection_context()
 @DB.lock("init_database_tables", 60)
 def init_database_tables(alter_fields=[]):
+    # Ensure the configured schema exists so table creation/lookup target it
+    # consistently (no-op when the schema already exists or when unset/public).
+    if DB_SCHEMA and settings.DATABASE_TYPE.lower() == "postgres":
+        DB.execute_sql(f'CREATE SCHEMA IF NOT EXISTS "{DB_SCHEMA}"')
     members = inspect.getmembers(sys.modules[__name__], inspect.isclass)
     table_objs = []
     create_failed_list = []
