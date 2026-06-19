@@ -22,6 +22,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
@@ -95,6 +96,9 @@ class MinerUBackend(StrEnum):
     VLM_VLLM_ASYNC_ENGINE = "vlm-vllm-async-engine"  # Asynchronous vLLM engine, new in MinerU API
     VLM_LMDEPLOY_ENGINE = "vlm-lmdeploy-engine"  # LMDeploy engine
     VLM_HTTP_CLIENT = "vlm-http-client"  # HTTP client for remote vLLM server (CPU only)
+    VLM_AUTO_ENGINE = "vlm-auto-engine"  # MinerU API 3.0+ auto-selected VLM engine
+    HYBRID_AUTO_ENGINE = "hybrid-auto-engine"  # Hybrid pipeline + VLM, auto-selected engine
+    HYBRID_HTTP_CLIENT = "hybrid-http-client"  # Hybrid backend via remote HTTP server
 
 
 class MinerULanguage(StrEnum):
@@ -232,7 +236,7 @@ class MinerUParser(RAGFlowPdfParser):
     def check_installation(self, backend: str = "pipeline", server_url: Optional[str] = None) -> tuple[bool, str]:
         reason = ""
 
-        valid_backends = ["pipeline", "vlm-http-client", "vlm-transformers", "vlm-vllm-engine", "vlm-mlx-engine", "vlm-vllm-async-engine", "vlm-lmdeploy-engine"]
+        valid_backends = ["pipeline", "vlm-http-client", "vlm-transformers", "vlm-vllm-engine", "vlm-mlx-engine", "vlm-vllm-async-engine", "vlm-lmdeploy-engine", "vlm-auto-engine", "hybrid-auto-engine", "hybrid-http-client"]
         if backend not in valid_backends:
             reason = f"[MinerU] Invalid backend '{backend}'. Valid backends are: {valid_backends}"
             self.logger.warning(reason)
@@ -255,17 +259,17 @@ class MinerUParser(RAGFlowPdfParser):
             self.logger.warning(reason)
             return False, reason
 
-        if backend == "vlm-http-client":
+        if backend in ("vlm-http-client", "hybrid-http-client"):
             resolved_server = server_url or self.mineru_server_url
             if not resolved_server:
-                reason = "[MinerU] MINERU_SERVER_URL required for vlm-http-client backend."
+                reason = f"[MinerU] MINERU_SERVER_URL required for {backend} backend."
                 self.logger.warning(reason)
                 return False, reason
             try:
                 server_ok = self._is_http_endpoint_valid(resolved_server)
-                self.logger.info(f"[MinerU] vlm-http-client server check reachable={server_ok} url={resolved_server}")
+                self.logger.info(f"[MinerU] {backend} server check reachable={server_ok} url={resolved_server}")
             except Exception as exc:
-                self.logger.warning(f"[MinerU] vlm-http-client server probe failed: {resolved_server}: {exc}")
+                self.logger.warning(f"[MinerU] {backend} server probe failed: {resolved_server}: {exc}")
 
         return True, reason
 
@@ -313,8 +317,118 @@ class MinerUParser(RAGFlowPdfParser):
         self.logger.info(f"[MinerU] request {options=}")
 
         headers = {"Accept": "application/json"}
+
+        # Prefer the async /tasks endpoint (MinerU API 3.0+); fall back to the
+        # synchronous /file_parse endpoint when /tasks is unavailable (404).
         try:
-            self.logger.info(f"[MinerU] invoke api: {self.mineru_api}/file_parse backend={options.backend} server_url={data.get('server_url')}")
+            return self._run_mineru_async_api(
+                pdf_file_path, pdf_file_name, output_path, output_zip_path, data, headers, callback
+            )
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else None
+            if status_code == 404:
+                self.logger.warning("[MinerU] Async /tasks API not available (404), fallback to sync /file_parse")
+                return self._run_mineru_sync_api(
+                    pdf_file_path, pdf_file_name, output_path, output_zip_path, data, headers, callback
+                )
+            raise RuntimeError(f"[MinerU] async api failed with exception {e}")
+
+    def _run_mineru_async_api(
+        self, pdf_file_path: str, pdf_file_name: str, output_path: str, output_zip_path: str,
+        data: dict, headers: dict, callback: Optional[Callable] = None,
+    ) -> Path:
+        """Submit to the async /tasks endpoint, poll until completion, download the result zip.
+
+        Lets requests.exceptions.HTTPError (e.g. 404) propagate so the caller can
+        fall back to the synchronous /file_parse endpoint.
+        """
+        self.logger.info(f"[MinerU] trying async API: {self.mineru_api}/tasks")
+        if callback:
+            callback(0.20, f"[MinerU] submitting task to {self.mineru_api}/tasks")
+
+        with open(pdf_file_path, "rb") as pdf_file:
+            files = {"files": (pdf_file_name + ".pdf", pdf_file, "application/pdf")}
+            submit_response = requests.post(
+                url=f"{self.mineru_api}/tasks",
+                files=files,
+                data=data,
+                headers=headers,
+                timeout=120,
+            )
+            submit_response.raise_for_status()
+
+        task_info = submit_response.json()
+        task_id = task_info.get("task_id")
+        if not task_id:
+            raise RuntimeError(f"[MinerU] No task_id in response: {task_info}")
+
+        self.logger.info(f"[MinerU] task submitted: task_id={task_id}")
+        if callback:
+            callback(0.25, f"[MinerU] task submitted: {task_id}")
+
+        status_url = f"{self.mineru_api}/tasks/{task_id}"
+        result_url = f"{self.mineru_api}/tasks/{task_id}/result"
+
+        max_wait_time = 3600
+        poll_interval = 5
+        max_retries = 10
+        start_time = time.time()
+        retry_count = 0
+
+        while time.time() - start_time < max_wait_time:
+            try:
+                status_response = requests.get(status_url, timeout=30)
+                status_response.raise_for_status()
+                status_data = status_response.json()
+                status = status_data.get("status", "unknown")
+                retry_count = 0
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    raise RuntimeError(f"[MinerU] Status query failed after {max_retries} retries: {e}")
+                self.logger.warning(f"[MinerU] Status query failed (attempt {retry_count}/{max_retries}): {e}, retrying...")
+                time.sleep(poll_interval)
+                continue
+
+            self.logger.info(f"[MinerU] task status: {status}")
+
+            if status == "completed":
+                self.logger.info(f"[MinerU] downloading result from {result_url}")
+                if callback:
+                    callback(0.30, "[MinerU] downloading result...")
+                with requests.get(result_url, timeout=300, stream=True) as result_response:
+                    result_response.raise_for_status()
+                    content_type = result_response.headers.get("Content-Type", "")
+                    if content_type.startswith("application/zip"):
+                        self.logger.info(f"[MinerU] zip file returned, saving to {output_zip_path}...")
+                        if callback:
+                            callback(0.35, f"[MinerU] saving result to {output_zip_path}...")
+                        with open(output_zip_path, "wb") as f:
+                            result_response.raw.decode_content = True
+                            shutil.copyfileobj(result_response.raw, f)
+                        self.logger.info(f"[MinerU] Unzip to {output_path}...")
+                        self._extract_zip_no_root(output_zip_path, output_path, pdf_file_name + "/")
+                        if callback:
+                            callback(0.40, f"[MinerU] Unzip to {output_path}...")
+                    else:
+                        self.logger.warning(f"[MinerU] not zip returned from api: {content_type}")
+                self.logger.info("[MinerU] Async API completed successfully.")
+                return Path(output_path)
+
+            if status == "failed":
+                error_msg = status_data.get("error", "Unknown error")
+                raise RuntimeError(f"[MinerU] Task failed: {error_msg}")
+
+            time.sleep(poll_interval)
+
+        raise RuntimeError(f"[MinerU] Task timeout after {max_wait_time}s")
+
+    def _run_mineru_sync_api(
+        self, pdf_file_path: str, pdf_file_name: str, output_path: str, output_zip_path: str,
+        data: dict, headers: dict, callback: Optional[Callable] = None,
+    ) -> Path:
+        try:
+            self.logger.info(f"[MinerU] invoke sync api: {self.mineru_api}/file_parse backend={data.get('backend')} server_url={data.get('server_url')}")
             if callback:
                 callback(0.20, f"[MinerU] invoke api: {self.mineru_api}/file_parse")
             with open(pdf_file_path, "rb") as pdf_file:
@@ -341,10 +455,10 @@ class MinerUParser(RAGFlowPdfParser):
                     self._extract_zip_no_root(output_zip_path, output_path, pdf_file_name + "/")
                     if callback:
                         callback(0.40, f"[MinerU] Unzip to {output_path}...")
-            self.logger.info("[MinerU] Api completed successfully.")
+            self.logger.info("[MinerU] Sync API completed successfully.")
             return Path(output_path)
         except requests.RequestException as e:
-            raise RuntimeError(f"[MinerU] api failed with exception {e}")
+            raise RuntimeError(f"[MinerU] sync api failed with exception {e}")
 
     def __images__(self, fnm, zoomin: int = 1, page_from=0, page_to=MAXIMUM_PAGE_NUMBER, callback=None):
         self.page_from = page_from
@@ -643,7 +757,21 @@ class MinerUParser(RAGFlowPdfParser):
                     break
 
         if not json_file:
-            raise FileNotFoundError(f"[MinerU] Missing output file, tried: {', '.join(str(p) for p in attempted)}")
+            # Last resort: recursively grab any *_content_list.json anywhere under output_dir.
+            self.logger.info("[MinerU] Known/pattern paths not found, searching recursively...")
+            for found_file in output_dir.rglob("*_content_list.json"):
+                self.logger.info(f"[MinerU] Found via recursive search: {found_file}")
+                attempted.append(found_file)
+                subdir = found_file.parent
+                json_file = found_file
+                break
+
+        if not json_file:
+            actual_files = [str(f) for f in output_dir.rglob("*.json")]
+            self.logger.error(f"[MinerU] No content_list.json found. Actual JSON files in {output_dir}: {actual_files}")
+            raise FileNotFoundError(
+                f"[MinerU] Missing output file, tried: {', '.join(str(p) for p in attempted)}. Found files: {actual_files}"
+            )
 
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -688,8 +816,8 @@ class MinerUParser(RAGFlowPdfParser):
                 ):
                     continue
                 case _:
-                    self.logger.debug("[MinerU] Skip unsupported section type=%s", output.get("type"))
-                    continue
+                    section = output.get("text", "")
+                    self.logger.warning(f"[MinerU] Unknown content type: {output.get('type')}, treating as text")
 
             if not table_enable:
                 section = self._sanitize_section_text(section)
