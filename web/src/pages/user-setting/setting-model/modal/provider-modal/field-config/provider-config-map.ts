@@ -845,6 +845,9 @@ export const ProviderConfigMap: Record<string, ProviderConfig> = {
           { label: 'vlm-mlx-engine', value: 'vlm-mlx-engine' },
           { label: 'vlm-vllm-async-engine', value: 'vlm-vllm-async-engine' },
           { label: 'vlm-lmdeploy-engine', value: 'vlm-lmdeploy-engine' },
+          { label: 'vlm-auto-engine', value: 'vlm-auto-engine' },
+          { label: 'hybrid-auto-engine', value: 'hybrid-auto-engine' },
+          { label: 'hybrid-http-client', value: 'hybrid-http-client' },
         ],
         validation: { message: 'mineruBackendMessage' },
       },
@@ -855,7 +858,8 @@ export const ProviderConfigMap: Record<string, ProviderConfig> = {
         required: false,
         placeholder: 'mineruServerUrlPlaceholder',
         shouldRender: (values: any) =>
-          values?.mineru_backend === 'vlm-http-client',
+          values?.mineru_backend === 'vlm-http-client' ||
+          values?.mineru_backend === 'hybrid-http-client',
         validation: { message: 'mineruServerUrlMessage' },
       },
       {
@@ -871,7 +875,10 @@ export const ProviderConfigMap: Record<string, ProviderConfig> = {
       delete cfg.instance_name;
       delete cfg.model_name;
       cfg.mineru_delete_output = values.mineru_delete_output ? '1' : '0';
-      if (values.mineru_backend !== 'vlm-http-client') {
+      if (
+        values.mineru_backend !== 'vlm-http-client' &&
+        values.mineru_backend !== 'hybrid-http-client'
+      ) {
         delete cfg.mineru_server_url;
       }
       return {
@@ -888,7 +895,10 @@ export const ProviderConfigMap: Record<string, ProviderConfig> = {
       delete cfg.instance_name;
       delete cfg.model_name;
       cfg.mineru_delete_output = values.mineru_delete_output ? '1' : '0';
-      if (values.mineru_backend !== 'vlm-http-client') {
+      if (
+        values.mineru_backend !== 'vlm-http-client' &&
+        values.mineru_backend !== 'hybrid-http-client'
+      ) {
         delete cfg.mineru_server_url;
       }
       return {
