@@ -4,6 +4,7 @@
 # infiniflow/ragflow_deps, or are local-only artifacts.
 
 # ── Python virtual environments ─────────────────────────────────────────────
+.git/
 .venv/
 venv/
 __pycache__/
