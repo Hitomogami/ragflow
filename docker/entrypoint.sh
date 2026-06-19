@@ -284,6 +284,8 @@ if [[ "${INIT_MODEL_PROVIDER_TABLES}" -eq 1 ]]; then
 fi
 
 if [[ "${ENABLE_WEBSERVER}" -eq 1 ]]; then
+    # Remove nginx default config that conflicts with ragflow.conf
+    rm -f /etc/nginx/conf.d/default.conf
     echo "Starting nginx..."
     /usr/sbin/nginx
 

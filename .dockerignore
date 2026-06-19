@@ -60,3 +60,11 @@ htmlcov/
 
 # ── Docker env (contains secrets) ───────────────────────────────────────────
 docker/.env
+
+# ── Local artifacts / DB backups (fork-specific, never enter build context) ──
+docker/ragflow-deploy.tar.gz
+docker/*.sql.gz
+docker/ragflow_backup.sql
+docker/ragflow_mysql_backup.sql
+docker/.env.original
+docker/conf/llm_factories.json

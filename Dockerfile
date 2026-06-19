@@ -3,7 +3,7 @@ FROM ubuntu:24.04 AS base
 USER root
 SHELL ["/bin/bash", "-c"]
 
-ARG NEED_MIRROR=0
+ARG NEED_MIRROR=1
 
 WORKDIR /ragflow
 
@@ -181,7 +181,9 @@ RUN --mount=type=cache,id=ragflow_uv,target=/root/.cache/uv,sharing=locked \
 # web source / docs changes don't invalidate this layer.
 COPY web/package.json web/package-lock.json web/.npmrc ./web/
 RUN --mount=type=cache,id=ragflow_npm,target=/root/.npm,sharing=locked \
-    cd web && NODE_OPTIONS="--max-old-space-size=8192" npm install
+    cd web && \
+    if [ "$NEED_MIRROR" == "1" ]; then npm config set registry https://registry.npmmirror.com; fi && \
+    NODE_OPTIONS="--max-old-space-size=8192" npm install
 
 # Copy full web source and docs for the frontend build.
 COPY web web

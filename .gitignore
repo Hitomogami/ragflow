@@ -241,3 +241,13 @@ bin/*
 # Local agent tooling state (per-developer; not for commit)
 .omc/
 .marscode/
+
+# Local deployment artifacts / DB backups (never commit — see MERGE_PLAN_0.26.1.md)
+docker/ragflow-deploy.tar.gz
+docker/ragflow_backup.sql
+docker/ragflow_mysql_backup.sql
+docker/.env.original
+docker/conf/llm_factories.json
+export-ragflow.sh
+test_kg_direct.py
+test_knowledge_graph_retrieval.py
